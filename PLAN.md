@@ -1,0 +1,402 @@
+# PLAN.md — 下班顺路吃什么
+
+> 本文档是项目的单一事实来源（Single Source of Truth）。  
+> 任何新会话读完此文档即可接手工作，无需翻阅聊天记录。
+
+---
+
+## 1. 项目概述
+
+**下班顺路吃什么** 是一个面向双人约饭场景的智能推荐工具。  
+目标用户：同城打工人，下班时间晚、吃完饭还需各自回家。  
+核心场景：输入 A/B 两人的下班地点和回家地点，AI 优先推荐双方回家路上都顺路的就餐地点，并规划各自路线；若无顺路结果，自动 fallback 到中间点推荐。
+
+---
+
+## 2. 技术栈与架构
+
+### 技术选型
+
+| 类别 | 选型 | 备注 |
+|---|---|---|
+| 后端语言 | Python 3.10+ | 使用 `str \| None` 类型注解语法，不可低于 3.10 |
+| Web 框架 | Flask 3.0 + flask-cors | |
+| LLM | 智谱 GLM-4-Flash | 免费，兼容 OpenAI SDK，通过 `base_url` 切换 |
+| 地图服务 | 高德地图 Web 服务 API + JS API 2.0 | Web 服务 Key 用于后端，JS Key 用于前端底图 |
+| 前端 | 纯 HTML/CSS/JS，单文件，无构建工具 | |
+| UI Kit | KABOOM! UI（`static/css/comic-ui.css`，MIT 协议） | 漫画/波普风格，直接引用原版 CSS，不二次改动 |
+| 依赖管理 | pip / uv | `requirements.txt` 锁定版本 |
+| 部署 | 本地开发，`bash start.sh` 或 `python app_v2.py` | |
+
+### 整体架构
+
+```
+用户浏览器（static/index.html）
+      │  HTTP / Fetch API
+      ▼
+Flask 后端（app_v2.py，端口 5000）
+      │
+      ├── GET  /api/config           → 向前端暴露 AMAP_JS_KEY / AMAP_JS_SECURITY_KEY
+      ├── POST /api/geocode          → 高德 geocode（地址→坐标）
+      ├── POST /api/geocode-suggest  → 高德 inputtips（地址联想下拉）
+      ├── POST /api/nearby-search    → 高德 place/around（附近 POI）
+      │
+      └── POST /api/v2/search        → 核心搜索流水线（M2 完整实现）
+            │
+            ├── [M2] Python 路线计算：
+            │     ① 并发计算基准路线（A下班→A家，B下班→B家）
+            │     ② 搜索 POI（高德 place/around）
+            │     ③ 逐 POI 计算 4 条腿路线，得出绕路时间
+            │     ④ 评分 + 排序 + fallback
+            │     ⑤ 写入 session 缓存
+            │
+            ├── [M3 待接入] Agent1（LLM）：从 query 提取 keyword / min_rating / weights
+            ├── [M3 待接入] Agent2（LLM + 工具）：find_midpoint / search_pois_nearby
+            └── [M3 待接入] Agent3（LLM）：生成 2-4 句推荐语
+      │
+      └── POST /api/v2/routes        → 路线重算（复用 session 缓存，不重新搜 POI）
+          GET  /api/v2/session/<id>  → 调试用，返回 session 摘要
+
+高德 JS API 2.0（前端直接加载，暗色主题底图）
+```
+
+### 核心算法逻辑
+
+```
+A 绕路时间 = 行程(A下班地 → 餐厅 → A家) - 行程(A下班地 → A家)
+B 绕路时间 = 行程(B下班地 → 餐厅 → B家) - 行程(B下班地 → B家)
+
+顺路标签（优先级由高到低）：
+  ✅ both  双向顺路：A绕路 ≤ threshold 且 B绕路 ≤ threshold
+  ⚠️ one   单向顺路：仅一方 ≤ threshold
+  ❌ none  均不顺路：两方均超出 → 触发 fallback，降级为中点算法推荐
+
+综合评分（同标签分组内排序）：
+  score = w₁ × poi_rating
+        - w₂ × (A_detour + B_detour)
+        - w₃ × |A_detour - B_detour|
+
+  M2 阶段：w₁=1.0，w₂=0.3，w₃=0.2（硬编码默认值）
+  M3 阶段：由 Agent1 从用户 query 中动态提取
+```
+
+---
+
+## 3. API 与密钥清单
+
+所有密钥通过 `.env` 注入，**严禁将实际 Key 值写入任何代码或文档**。  
+参考 `.env.example` 配置，向高德控制台申请时注意类型。
+
+| API | 用途 | .env 变量名 | 调用方 |
+|---|---|---|---|
+| 智谱 GLM-4-Flash | LLM（M3 Agent1/2/3） | `ZHIPU_API_KEY` | 后端 |
+| 智谱 API 端点 | LLM base_url | `ZHIPU_BASE_URL` | 后端（值为 `https://open.bigmodel.cn/api/paas/v4`） |
+| 高德 Web 服务 | 路线规划、POI 搜索、地理编码（后端调用） | `AMAP_KEY` | 后端 |
+| 高德 JS API | 前端地图底图渲染 | `AMAP_JS_KEY` | 前端（经 `/api/config` 下发） |
+| 高德 JS API 安全密钥 | JS API 2.0 要求的配套安全码 | `AMAP_JS_SECURITY_KEY` | 前端（经 `/api/config` 下发） |
+
+**申请说明：**
+- 智谱：https://open.bigmodel.cn — 免费版 GLM-4-Flash 无需付费
+- 高德：https://console.amap.com
+  - `AMAP_KEY`：创建「Web 服务」类型应用
+  - `AMAP_JS_KEY` + `AMAP_JS_SECURITY_KEY`：创建「Web 端（JS API）」类型应用，需在控制台将 `localhost` / `127.0.0.1` 加入域名白名单
+
+---
+
+## 4. 已完成进度
+
+### 文件结构（当前实际状态）
+
+```
+/Users/sunxiaoran/Desktop/grace/claude/   ← 项目根目录
+├── app_v2.py            # 后端主文件【⚠️ 当前为 M1 骨架，见下方说明】
+├── requirements.txt     # 依赖锁定
+├── start.sh             # 一键启动（python3 venv + pip install + python app_v2.py）
+├── .env                 # API Keys（不提交 git）
+├── .env.example         # Key 模板【⚠️ 待更新，见"已知问题"】
+├── PLAN.md              # 本文档
+├── static/
+│   ├── index.html       # 前端单页（M1 完整 KABOOM! UI 骨架）
+│   └── css/
+│       └── comic-ui.css # KABOOM! UI 原版 CSS（MIT，直接引用）
+└── meetmid-v2/          # M2 开发目录（本次会话产出，待合并到根目录）
+    ├── app_v2.py        # ✅ M2 完整后端实现（核心代码在此）
+    ├── .env             # M2 使用的 Keys（含 ZHIPU + AMAP_JS_SECURITY_KEY）
+    ├── .env.example
+    ├── requirements.txt
+    ├── start.sh
+    └── static/
+        └── index.html   # 极简骨架（仅用于 M2 本地测试，无 KABOOM! UI）
+```
+
+> **重要：** `meetmid-v2/app_v2.py` 是 M2 的完整实现，根目录 `app_v2.py` 仍是 M1 骨架。  
+> M2 合并任务：将 `meetmid-v2/app_v2.py` 替换根目录 `app_v2.py`，同步更新根目录 `.env.example`。这是 M3 开始前的第一步。
+
+---
+
+### M1：项目骨架 ✅
+
+**根目录 `app_v2.py` 已实现的接口：**
+
+| 方法 | 路径 | 状态 | 说明 |
+|---|---|---|---|
+| GET | `/` | ✅ | 返回 `static/index.html` |
+| GET | `/api/config` | ✅ | 返回 `{ amap_js_key }` 供前端使用 |
+| POST | `/api/geocode` | ✅ | 地址→坐标，代理高德 geocode |
+| POST | `/api/geocode-suggest` | ✅ | 地址联想，代理高德 inputtips |
+| POST | `/api/nearby-search` | ✅ | 附近 POI，代理高德 place/around |
+| POST | `/api/v2/search` | ❌ 501 | M1 骨架，核心逻辑在 meetmid-v2/ |
+| POST | `/api/v2/routes` | ❌ 501 | M1 骨架，核心逻辑在 meetmid-v2/ |
+| GET | `/api/v2/session/<id>` | ✅ | session 内容查看（调试用） |
+
+**`static/index.html` 已实现的前端功能（M1 完整骨架）：**
+
+- KABOOM! 漫画风格整体布局（黄底、粗墨线边框、CMYK 错位阴影）
+- 双栏布局：左侧输入区 + 结果区 / 右侧地图，拖拽分界线可调节宽度
+- A/B 两人各自的「下班地点」+「回家地点」输入卡片，含地址搜索联想下拉
+- 出行方式选择（⚡最快 / 🚇公交地铁 / 🚲骑行 / 🚗驾车 / 🚶步行），A/B 独立
+- 自然语言需求输入框 + 城市 + 出发时间
+- 搜索按钮，调 `/api/v2/search`
+- 加载动画（手写 CSS 对齐 KABOOM! 风格）
+- 结果卡片区占位（待 M4 填充）
+- 路线重算面板占位（待 M4 填充）
+- 高德地图初始化（暗色主题，`/api/config` 获取 Key，漫画粗边框包裹地图容器）
+
+---
+
+### M2：后端核心路线计算 ✅
+
+**实现文件：`meetmid-v2/app_v2.py`**
+
+#### 核心函数清单
+
+| 函数 | 职责 |
+|---|---|
+| `lnglat_to_str(loc)` | `{"lng":x,"lat":y}` → `"x,y"` 字符串，供高德 API 使用 |
+| `haversine_km(loc_a, loc_b)` | 计算两点 Haversine 直线距离（km） |
+| `find_midpoint(loc_a, loc_b)` | 返回两点地理中心 `{"lng":..., "lat":...}` |
+| `dynamic_radius(loc_a, loc_b)` | 搜索半径 = 两点距离/2，上限 5000m |
+| `_call_driving/walking/transit/cycling(origin, dest)` | 各出行方式的高德路线 API 原始调用，返回秒数，失败返回 99999 |
+| `get_route_time(origin, dest, mode, city)` | 统一路线时间入口，含失败重试（sleep 0.5s 后重试一次）；`auto` 模式取 driving/transit 最小值 |
+| `search_pois_nearby(center, keyword, radius, min_rating, city)` | 高德 place/around 搜索，返回最多 20 个 POI，含 `loc_str` 字段 |
+| `calc_detour_for_poi(poi, a_work_str, a_home_str, b_work_str, b_home_str, baseline_a_sec, baseline_b_sec, prefer_a, prefer_b, city)` | 顺序调 4 条腿路线，计算 A/B 绕路时间，返回附带 `a_route`/`b_route` 字段的 POI dict |
+| `label_detour(a_min, b_min, threshold)` | 返回顺路标签 `"both"` / `"one"` / `"none"` |
+| `score_poi(poi, weights)` | 计算综合评分：`w1*rating - w2*(a+b) - w3*|a-b|` |
+| `enrich_and_rank(pois, threshold, weights)` | 批量附加标签+评分，按 both>one>none 分组，组内按 score 降序排列 |
+
+#### `/api/v2/search` 完整请求/响应结构
+
+**请求体：**
+```json
+{
+  "location_a_work": { "lng": 116.397, "lat": 39.908, "name": "A公司" },
+  "location_a_home": { "lng": 116.320, "lat": 39.980, "name": "A的家" },
+  "location_b_work": { "lng": 116.469, "lat": 39.995, "name": "B公司" },
+  "location_b_home": { "lng": 116.550, "lat": 39.920, "name": "B的家" },
+  "query":               "找一家安静的日料，不要太贵",
+  "city":                "北京",
+  "prefer_a":            "transit",
+  "prefer_b":            "auto",
+  "departure_time":      "20:00",
+  "max_detour_minutes":  15
+}
+```
+
+**响应体：**
+```json
+{
+  "session_id":       "uuid-string",
+  "center":           { "lng": 116.433, "lat": 39.952 },
+  "radius":           5000,
+  "baseline_a_min":   61.3,
+  "baseline_b_min":   77.7,
+  "total":            20,
+  "results": [
+    {
+      "id":             "B0XXXXXX",
+      "name":           "然锅料理",
+      "address":        "朝阳区XX路XX号",
+      "type":           "餐饮服务;...",
+      "rating":         4.8,
+      "cost":           "120.00",
+      "location":       { "lng": 116.456, "lat": 39.948 },
+      "loc_str":        "116.456,39.948",
+      "detour_label":   "both" | "one" | "none",
+      "score":          3.54,
+      "a_route": {
+        "leg1_sec":     3692,
+        "leg2_sec":     3314,
+        "total_sec":    7006,
+        "total_min":    116.8,
+        "detour_min":   55.5,
+        "mode":         "transit",
+        "ok":           true
+      },
+      "b_route":        "（同 a_route 结构）"
+    }
+  ],
+  "fallback_results": []
+}
+```
+
+#### `/api/v2/routes` 请求/响应结构
+
+**请求体：**
+```json
+{
+  "session_id":  "uuid-string",
+  "prefer_a":    "cycling",
+  "prefer_b":    "driving"
+}
+```
+
+**响应体：** 同 `/api/v2/search`，只含 `session_id` / `baseline_*_min` / `results` / `total`。
+
+#### 执行流程（`/api/v2/search`）
+
+```
+1. 解析请求，提取 4 个坐标 + prefer_a/b + threshold
+2. ThreadPoolExecutor(max_workers=2) 并发计算基准路线（A→家，B→家）
+3. 计算搜索中心（两工作地中点）和动态半径
+4. 调高德 place/around 搜索 POI（最多 20 个）
+5. ThreadPoolExecutor(max_workers=2) 并发处理各 POI：
+     └── calc_detour_for_poi（内部顺序调 4 条腿，避免 QPS 限流）
+6. 评分排序（enrich_and_rank），打顺路标签
+7. 若全部 none → 触发 fallback：重新搜 POI，按 rating 降序，取前 10
+8. 写入 sessions 缓存（key=session_id，含原始 pois 供路线重算复用）
+9. 返回 JSON
+```
+
+#### `sessions` 缓存结构
+
+```python
+sessions[session_id] = {
+    "created_at":     float,         # time.time()
+    "request":        dict,          # 原始请求体（路线重算需要）
+    "center":         dict,          # 搜索中心坐标
+    "radius":         int,           # 搜索半径（米）
+    "baseline_a_sec": int,           # A 基准路线（秒）
+    "baseline_b_sec": int,
+    "pois":           list[dict],    # 原始 POI 列表（路线重算时无需重新搜索）
+    "ranked":         list[dict],    # 排序后的完整结果
+    "fallback":       list[dict],    # fallback 推荐（可能为空）
+    "weights":        dict,          # {"w1":1.0,"w2":0.3,"w3":0.2}
+    "threshold":      int,           # 绕路时间阈值（分钟）
+}
+```
+
+---
+
+## 5. 里程碑规划
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| M1 | 项目初始化：Flask 骨架、前端 KABOOM! UI 骨架、KABOOM! UI CSS 接入 | ✅ 完成 |
+| M2 | 后端核心：四点输入 + 绕路时间计算 + 路线重算逻辑 | ✅ 完成 |
+| M3 | Multi-Agent 流水线：Agent1/2/3 接入智谱 GLM-4-Flash | ⬜ 未开始 |
+| M4 | 前端结果展示：顺路标签、结果卡片、地图标记、中间点 fallback 区 | ⬜ 未开始 |
+| M5 | UI 精修：卡片选中高亮、附近搜索面板、加载动效 | ⬜ 未开始 |
+| M6 | 联调测试、边界情况处理、README 补全 | ⬜ 未开始 |
+
+### 关键决策记录
+
+**M1**
+- **KABOOM! UI 直接使用原版 CSS**：不二次改动 Kit 本身，缺失组件（地址下拉候选、加载动画）手写 CSS 补全，保持风格对齐。地图区用高德暗色主题 + 漫画粗边框包裹解决风格冲突。
+
+**M2**
+- **M2 优先于 M3**：先用 Python 直调高德 API 验证绕路计算逻辑，再接 LLM，避免 Agent 不确定性干扰核心算法调试。
+- **路线调用改为顺序执行**（不用嵌套 ThreadPoolExecutor）：高德公交方向 API QPS 限制严格，嵌套线程池触发限速后全部返回 99999；改为每个 POI 内顺序调 4 条腿，外层 max_workers=2，并行量可控。
+- **失败重试机制**：`get_route_time` 遇到 99999 时 sleep 0.5s 重试一次，解决偶发性空响应。
+- **`auto` 模式 = min(driving, transit)**：不跑全部 4 种出行方式，节省 API 调用量；步行/骑行距离过长时结果无意义。
+- **M2 阶段权重硬编码**：w1=1.0，w2=0.3，w3=0.2；M3 Agent1 接入后改为 LLM 从 query 动态提取（如用户强调"公平"则 w3 加大，强调"快"则 w2 加大）。
+- **LLM 从 DeepSeek 换为智谱 GLM-4-Flash**：免费额度满足开发需求，且兼容 OpenAI SDK，只需改 `base_url` 和 `model` 参数，迁移成本为零。
+
+**M3（预定决策）**
+- **Agent2 工具返回压缩摘要，完整数据存 Python 侧**：POI 原始数据体积大，全量传给 LLM 会导致 token 爆炸，只给 LLM 看「名称/地址/评分/距离」摘要即可完成规划任务。
+- **"均不顺路"时 fallback 到中点算法**：不让用户空手而归，在界面上单独展示为"中间点推荐"分区，明确告知无顺路结果。
+
+---
+
+## 6. 已知问题与待办
+
+### 待解决（开始 M3 前必须完成）
+
+1. ✅ **M2 代码已合并到根目录**（M3 会话已完成）  
+   `meetmid-v2/app_v2.py` → 根目录 `app_v2.py`，`meetmid-v2/` 目录保留备用。
+
+2. ✅ **根目录 `.env.example` 已更新**（M3 会话已完成）  
+   移除 `DEEPSEEK_API_KEY`，补入 `ZHIPU_API_KEY`、`ZHIPU_BASE_URL`、`AMAP_JS_SECURITY_KEY`。
+
+3. ✅ **`/api/config` 已返回 `amap_js_security_key`**（合并后自动修复）
+
+---
+
+## 7. M3 Agent 详细设计
+
+### Agent1 — Query 解析器
+
+**文件：** `agents/agent1_parser.py`  
+**模型：** `glm-4-flash`（智谱，免费版）  
+**职责：** 将用户自然语言 query 解析为结构化搜索参数，供 M2 的 POI 搜索和评分排序函数消费。
+
+#### 输入
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `query` | str | 用户输入的自然语言，如"找评分高的火锅，不要太贵" |
+
+#### 输出（`parse_query()` 返回）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `keyword` | str | 高德 POI 搜索关键词（如"火锅"、"日料"） |
+| `min_rating` | float | 最低评分过滤阈值，0.0~5.0 |
+| `w1` | float | 评分权重（0.5~2.0），强调"评分高"时取 1.5 |
+| `w2` | float | 总绕路时间惩罚权重（0.1~0.8），强调"顺路优先"时取 0.6 |
+| `w3` | float | 双方公平性惩罚权重（0.1~0.5），强调"两边差不多/均等"时取 0.4 |
+| `_source` | str | `"llm"` 或 `"fallback"`，标记是否触发了降级 |
+
+#### 降级兜底策略
+
+LLM 调用失败或返回格式不合法时，最多重试 2 次（退避 1s / 2s），全部失败后使用默认值：`keyword=query原文`，`min_rating=0.0`，`w1=1.0`，`w2=0.3`，`w3=0.2`。
+
+#### Agent1 输出 → M2 消费格式的字段映射
+
+Agent1 返回扁平结构（`w1/w2/w3` 为顶层字段），M2 的 `enrich_and_rank()` 和 `score_poi()` 期望嵌套 `weights` dict。转换通过 `agent1_to_search_params()` 完成：
+
+```python
+# agents/agent1_parser.py
+def agent1_to_search_params(agent1_result: dict) -> dict:
+    return {
+        "keyword":    agent1_result["keyword"],     # → search_pois_nearby(keyword=...)
+        "min_rating": agent1_result["min_rating"],  # → search_pois_nearby(min_rating=...)
+        "weights": {                                # → enrich_and_rank(weights=...)
+            "w1": agent1_result["w1"],
+            "w2": agent1_result["w2"],
+            "w3": agent1_result["w3"],
+        },
+    }
+```
+
+| Agent1 字段 | M2 消费方 | 传入参数名 | 状态 |
+|---|---|---|---|
+| `keyword` | `search_pois_nearby()` | `keyword` | ✅ 直接传入 |
+| `min_rating` | `search_pois_nearby()` | `min_rating` | ✅ 直接传入 |
+| `w1/w2/w3` | `enrich_and_rank()` / `score_poi()` | `weights["w1/w2/w3"]` | ⚠️ 需封装为 dict，由 `agent1_to_search_params()` 完成 |
+
+#### 串联位置（`app_v2.py` 的 `/api/v2/search`）
+
+M3 接入后，以下两行硬编码将被替换：
+
+```python
+# 替换前（M2 硬编码）
+keyword = query
+weights = DEFAULT_WEIGHTS.copy()
+
+# 替换后（M3 Agent1 驱动）
+agent1_raw    = parse_query(query)
+search_params = agent1_to_search_params(agent1_raw)
+keyword       = search_params["keyword"]
+min_rating    = search_params["min_rating"]
+weights       = search_params["weights"]
+```
