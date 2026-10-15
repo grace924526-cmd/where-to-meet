@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>下班顺路吃饭 🍜</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      background: #f5f5f5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+    .placeholder {
+      text-align: center;
+      color: #555;
+    }
+    .placeholder h1 { font-size: 2rem; margin-bottom: 8px; }
+    .placeholder p  { color: #999; }
+    #map-status { margin-top: 16px; font-size: 0.9rem; color: #aaa; }
+  </style>
+</head>
+<body>
+  <div class="placeholder">
+    <h1>🍜 下班顺路吃饭推荐</h1>
+    <p>M1 骨架页面 —— 前端 UI 在 M4 开始填充</p>
+    <div id="map-status">正在加载高德地图…</div>
+  </div>
+
+  <script>
+    // ── 从后端获取高德 JS Key，动态注入地图 SDK ──
+    async function loadAmap() {
+      try {
+        const res = await fetch('/api/config');
+        const cfg = await res.json();
+
+        // 设置安全密钥
+        window._AMapSecurityConfig = { securityJsCode: cfg.amap_js_security_key };
+
+        // 动态加载高德地图 JS SDK
+        const script = document.createElement('script');
+        script.src = `https://webapi.amap.com/maps?v=2.0&key=${cfg.amap_js_key}`;
+        script.onload = () => {
+          document.getElementById('map-status').textContent =
+            '✅ 高德地图 JS Key 验证通过';
+        };
+        script.onerror = () => {
+          document.getElementById('map-status').textContent =
+            '❌ 高德地图加载失败，检查 JS Key 或白名单配置';
+        };
+        document.head.appendChild(script);
+      } catch (e) {
+        document.getElementById('map-status').textContent =
+          '❌ 无法连接后端，请确认 Flask 服务已启动';
+      }
+    }
+
+    loadAmap();
+  </script>
+</body>
+</html>

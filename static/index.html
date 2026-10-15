@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>💥 下班顺路吃什么！</title>
+  <link rel="stylesheet" href="/static/css/comic-ui.css" />
+  <style>
+    /* ── 布局骨架 ── */
+    body { min-height: 100vh; }
+
+    .app-header {
+      background-color: var(--k-yellow);
+      border-bottom: var(--k-stroke);
+      padding: 20px 40px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .app-header h1 {
+      font-size: 36px;
+      margin: 0;
+      text-shadow: 3px 3px 0px var(--k-ink);
+    }
+
+    .app-body {
+      display: flex;
+      height: calc(100vh - 80px);
+    }
+
+    /* 左侧面板：输入区 + 结果区 */
+    .panel-left {
+      width: 420px;
+      min-width: 280px;
+      max-width: 600px;
+      border-right: var(--k-stroke);
+      overflow-y: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* 右侧面板：地图 */
+    .panel-right {
+      flex: 1;
+      position: relative;
+    }
+    #map-container {
+      width: 100%;
+      height: 100%;
+      border: 4px solid var(--k-ink); /* 漫画框 */
+      background: #1a1a2e; /* 地图加载前的底色 */
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-family: 'Bangers', cursive;
+      font-size: 24px;
+    }
+
+    /* 拖拽分界线 */
+    .divider {
+      width: 8px;
+      cursor: col-resize;
+      background: var(--k-ink);
+      flex-shrink: 0;
+    }
+    .divider:hover { background: var(--k-red); }
+
+    /* ── 输入卡片 ── */
+    .location-card { position: relative; }
+    .location-card .card-label {
+      position: absolute;
+      top: -14px; left: 16px;
+      background: var(--k-yellow);
+      border: 2px solid var(--k-ink);
+      font-family: 'Bangers', cursive;
+      font-size: 18px;
+      padding: 2px 10px;
+      letter-spacing: 1px;
+    }
+    .location-card.b-card .card-label { background: var(--k-blue); color: var(--k-white); }
+
+    .input-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+    .input-row label { font-size: 14px; color: #555; font-family: 'Comic Neue', cursive; }
+    .input-row .k-input { margin-bottom: 0; }
+
+    /* 自定义下拉候选框（KABOOM! 风格手写） */
+    .suggest-wrap { position: relative; }
+    .suggest-list {
+      position: absolute; top: 100%; left: 0; right: 0; z-index: 999;
+      background: var(--k-white);
+      border: var(--k-stroke);
+      box-shadow: var(--k-shadow);
+      max-height: 200px; overflow-y: auto;
+      display: none;
+    }
+    .suggest-list.open { display: block; }
+    .suggest-item {
+      padding: 10px 16px;
+      cursor: pointer;
+      border-bottom: 2px dashed var(--k-ink);
+      font-size: 15px;
+    }
+    .suggest-item:hover { background: var(--k-yellow); }
+
+    /* ── 需求输入 ── */
+    .query-section { }
+    .query-section textarea.k-input {
+      resize: vertical;
+      min-height: 80px;
+      margin-bottom: 0;
+    }
+
+    /* 出行方式选择 */
+    .travel-mode {
+      display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;
+    }
+    .mode-btn {
+      padding: 6px 12px;
+      border: 2px solid var(--k-ink);
+      background: var(--k-white);
+      cursor: pointer;
+      font-family: 'Comic Neue', cursive;
+      font-weight: 700;
+      font-size: 14px;
+      transition: all 0.1s;
+    }
+    .mode-btn.active { background: var(--k-blue); color: var(--k-white); }
+    .mode-btn:hover { background: var(--k-yellow); color: var(--k-ink); }
+
+    /* ── 加载状态（手写 KABOOM! 风格） ── */
+    .loading-bar {
+      display: none;
+      text-align: center;
+      padding: 16px;
+    }
+    .loading-bar.show { display: block; }
+    .loading-dots span {
+      display: inline-block;
+      width: 12px; height: 12px;
+      background: var(--k-ink);
+      border-radius: 50%;
+      margin: 0 4px;
+      animation: bounce 0.8s infinite alternate;
+    }
+    .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce { from { transform: translateY(0); } to { transform: translateY(-12px); } }
+
+    /* ── 结果卡片 ── */
+    .results-section { display: none; }
+    .results-section.show { display: block; }
+    .result-card {
+      margin-bottom: 16px;
+      cursor: pointer;
+      transition: transform 0.15s;
+    }
+    .result-card:hover { transform: translate(-2px, -2px); box-shadow: 8px 8px 0px var(--k-ink); }
+    .result-card.selected { border-color: var(--k-red); box-shadow: 6px 6px 0px var(--k-red); }
+
+    .result-card .result-name { font-family: 'Bangers', cursive; font-size: 22px; margin-bottom: 4px; }
+    .result-card .result-address { font-size: 13px; color: #555; margin-bottom: 10px; }
+    .result-card .route-row { display: flex; justify-content: space-between; font-size: 14px; margin-top: 6px; }
+    .result-card .route-col { flex: 1; }
+    .result-card .route-col strong { font-family: 'Bangers', cursive; font-size: 16px; }
+
+    /* 顺路标签 */
+    .detour-badge {
+      display: inline-block;
+      font-family: 'Bangers', cursive;
+      font-size: 16px;
+      padding: 2px 10px;
+      border: 2px solid var(--k-ink);
+      box-shadow: 2px 2px 0 var(--k-ink);
+      margin-bottom: 8px;
+    }
+    .detour-badge.both  { background: var(--k-green); }
+    .detour-badge.one   { background: var(--k-yellow); }
+    .detour-badge.none  { background: #ddd; }
+
+    /* 中间点推荐分区 */
+    .midpoint-section { margin-top: 16px; }
+    .midpoint-section .section-title {
+      font-family: 'Bangers', cursive; font-size: 20px;
+      border-bottom: var(--k-stroke); padding-bottom: 6px; margin-bottom: 12px;
+    }
+
+    /* 响应式 */
+    @media (max-width: 768px) {
+      .app-body { flex-direction: column; }
+      .panel-left { width: 100%; max-width: 100%; border-right: none; border-bottom: var(--k-stroke); height: 60vh; }
+      .panel-right { height: 40vh; }
+      .divider { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Header ── -->
+  <header class="app-header">
+    <h1>💥 下班顺路吃什么！</h1>
+    <span class="k-badge" style="transform:rotate(3deg); font-size:14px;">BETA</span>
+  </header>
+
+  <!-- ── 主体 ── -->
+  <div class="app-body">
+
+    <!-- 左侧面板 -->
+    <div class="panel-left" id="panel-left">
+
+      <!-- A 的信息 -->
+      <div class="k-card location-card" style="margin-top: 14px;">
+        <span class="card-label">👤 人员 A</span>
+        <div class="input-row" style="margin-top: 8px;">
+          <label>下班地点</label>
+          <div class="suggest-wrap">
+            <input class="k-input" id="a-work-input" placeholder="搜索公司地址..." autocomplete="off" />
+            <div class="suggest-list" id="a-work-suggest"></div>
+          </div>
+        </div>
+        <div class="input-row">
+          <label>回家地点</label>
+          <div class="suggest-wrap">
+            <input class="k-input" id="a-home-input" placeholder="搜索家庭住址..." autocomplete="off" />
+            <div class="suggest-list" id="a-home-suggest"></div>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:14px; color:#555;">出行方式</label>
+          <div class="travel-mode" id="a-travel-mode">
+            <button class="mode-btn active" data-mode="auto">⚡ 最快</button>
+            <button class="mode-btn" data-mode="transit">🚇 公交</button>
+            <button class="mode-btn" data-mode="cycling">🚲 骑行</button>
+            <button class="mode-btn" data-mode="driving">🚗 驾车</button>
+            <button class="mode-btn" data-mode="walking">🚶 步行</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- B 的信息 -->
+      <div class="k-card location-card b-card" style="margin-top: 14px;">
+        <span class="card-label">👤 人员 B</span>
+        <div class="input-row" style="margin-top: 8px;">
+          <label>下班地点</label>
+          <div class="suggest-wrap">
+            <input class="k-input" id="b-work-input" placeholder="搜索公司地址..." autocomplete="off" />
+            <div class="suggest-list" id="b-work-suggest"></div>
+          </div>
+        </div>
+        <div class="input-row">
+          <label>回家地点</label>
+          <div class="suggest-wrap">
+            <input class="k-input" id="b-home-input" placeholder="搜索家庭住址..." autocomplete="off" />
+            <div class="suggest-list" id="b-home-suggest"></div>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:14px; color:#555;">出行方式</label>
+          <div class="travel-mode" id="b-travel-mode">
+            <button class="mode-btn active" data-mode="auto">⚡ 最快</button>
+            <button class="mode-btn" data-mode="transit">🚇 公交</button>
+            <button class="mode-btn" data-mode="cycling">🚲 骑行</button>
+            <button class="mode-btn" data-mode="driving">🚗 驾车</button>
+            <button class="mode-btn" data-mode="walking">🚶 步行</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 需求描述 -->
+      <div class="k-card query-section">
+        <h3 style="font-size:18px; margin-bottom:8px;">🍜 想吃什么？</h3>
+        <textarea class="k-input" id="query-input" placeholder="例：找一家安静的日料，不要太贵，两边路上时间差不多..."></textarea>
+        <input class="k-input" id="city-input" placeholder="城市（如：北京）" style="margin-top:8px;" />
+        <input class="k-input" id="departure-time" placeholder="出发时间（如：20:00，可选）" style="margin-top:4px;" />
+        <button class="k-btn full" id="search-btn" style="margin-top:12px; font-size:20px;">
+          💥 出发！找饭店！
+        </button>
+      </div>
+
+      <!-- 加载中 -->
+      <div class="loading-bar" id="loading-bar">
+        <div class="loading-dots">
+          <span></span><span></span><span></span>
+        </div>
+        <p style="font-family:'Bangers',cursive; font-size:20px; margin-top:8px;">正在计算顺路方案...</p>
+      </div>
+
+      <!-- 结果区 -->
+      <div class="results-section" id="results-section">
+        <h3 id="results-title" style="font-family:'Bangers',cursive; font-size:22px; margin-bottom:12px;">🎯 顺路推荐</h3>
+        <div id="results-list"></div>
+
+        <!-- 中间点 fallback 区 -->
+        <div class="midpoint-section" id="midpoint-section" style="display:none;">
+          <div class="section-title">📍 中间点推荐（无顺路结果）</div>
+          <div id="midpoint-list"></div>
+        </div>
+
+        <!-- 路线重算 -->
+        <div class="k-card" id="recalc-panel" style="margin-top:16px; display:none;">
+          <h3 style="font-size:16px; margin-bottom:10px;">🔄 切换出行方式重算</h3>
+          <div>
+            <label style="font-size:13px;">A 的出行方式</label>
+            <div class="travel-mode" id="a-recalc-mode">
+              <button class="mode-btn active" data-mode="auto">⚡</button>
+              <button class="mode-btn" data-mode="transit">🚇</button>
+              <button class="mode-btn" data-mode="cycling">🚲</button>
+              <button class="mode-btn" data-mode="driving">🚗</button>
+              <button class="mode-btn" data-mode="walking">🚶</button>
+            </div>
+          </div>
+          <div style="margin-top:8px;">
+            <label style="font-size:13px;">B 的出行方式</label>
+            <div class="travel-mode" id="b-recalc-mode">
+              <button class="mode-btn active" data-mode="auto">⚡</button>
+              <button class="mode-btn" data-mode="transit">🚇</button>
+              <button class="mode-btn" data-mode="cycling">🚲</button>
+              <button class="mode-btn" data-mode="driving">🚗</button>
+              <button class="mode-btn" data-mode="walking">🚶</button>
+            </div>
+          </div>
+          <button class="k-btn blue full" id="recalc-btn" style="margin-top:12px; font-size:16px;">重新计算路线</button>
+        </div>
+      </div>
+
+    </div><!-- /panel-left -->
+
+    <!-- 拖拽分界线 -->
+    <div class="divider" id="divider"></div>
+
+    <!-- 右侧地图 -->
+    <div class="panel-right">
+      <div id="map-container">
+        <span>地图加载中...</span>
+      </div>
+    </div>
+
+  </div><!-- /app-body -->
+
+  <script>
+    // ══════════════════════════════════════════════
+    // 状态
+    // ══════════════════════════════════════════════
+    const state = {
+      a_work: null, a_home: null,
+      b_work: null, b_home: null,
+      prefer_a: 'auto', prefer_b: 'auto',
+      session_id: null,
+      map: null,
+      markers: [],
+    };
+
+    // ══════════════════════════════════════════════
+    // 高德地图初始化
+    // ══════════════════════════════════════════════
+    async function initMap() {
+      const res = await fetch('/api/config');
+      const cfg = await res.json();
+      const jsKey = cfg.amap_js_key;
+      if (!jsKey) { document.getElementById('map-container').textContent = '⚠️ 未配置 AMAP_JS_KEY'; return; }
+
+      const script = document.createElement('script');
+      script.src = `https://webapi.amap.com/maps?v=2.0&key=${jsKey}&callback=onMapLoad`;
+      document.head.appendChild(script);
+    }
+
+    window.onMapLoad = function() {
+      state.map = new AMap.Map('map-container', {
+        zoom: 12,
+        center: [116.397, 39.909],
+        mapStyle: 'amap://styles/dark',
+      });
+    };
+
+    // ══════════════════════════════════════════════
+    // 地址搜索联想
+    // ══════════════════════════════════════════════
+    function bindSuggest(inputId, suggestId, stateKey) {
+      const input   = document.getElementById(inputId);
+      const suggest = document.getElementById(suggestId);
+      let debounceTimer;
+
+      input.addEventListener('input', () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(async () => {
+          const kw = input.value.trim();
+          if (!kw) { suggest.classList.remove('open'); return; }
+          const city = document.getElementById('city-input').value || '';
+          const res  = await fetch('/api/geocode-suggest', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ keyword: kw, city })
+          });
+          const data = await res.json();
+          const tips = data.tips || [];
+          suggest.innerHTML = tips.slice(0, 6).map(t => `
+            <div class="suggest-item" data-lng="${t.location?.split(',')[0] || ''}" data-lat="${t.location?.split(',')[1] || ''}" data-name="${t.name}">
+              ${t.name} <small style="color:#888;">${t.district || ''}</small>
+            </div>
+          `).join('');
+          suggest.classList.toggle('open', tips.length > 0);
+        }, 300);
+      });
+
+      suggest.addEventListener('click', e => {
+        const item = e.target.closest('.suggest-item');
+        if (!item) return;
+        const lng = parseFloat(item.dataset.lng);
+        const lat = parseFloat(item.dataset.lat);
+        const name = item.dataset.name;
+        if (lng && lat) {
+          state[stateKey] = { lng, lat, name };
+          input.value = name;
+        }
+        suggest.classList.remove('open');
+      });
+
+      document.addEventListener('click', e => {
+        if (!input.contains(e.target) && !suggest.contains(e.target))
+          suggest.classList.remove('open');
+      });
+    }
+
+    bindSuggest('a-work-input', 'a-work-suggest', 'a_work');
+    bindSuggest('a-home-input', 'a-home-suggest', 'a_home');
+    bindSuggest('b-work-input', 'b-work-suggest', 'b_work');
+    bindSuggest('b-home-input', 'b-home-suggest', 'b_home');
+
+    // ══════════════════════════════════════════════
+    // 出行方式切换
+    // ══════════════════════════════════════════════
+    function bindTravelMode(groupId, stateKey) {
+      const group = document.getElementById(groupId);
+      group.addEventListener('click', e => {
+        const btn = e.target.closest('.mode-btn');
+        if (!btn) return;
+        group.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state[stateKey] = btn.dataset.mode;
+      });
+    }
+
+    bindTravelMode('a-travel-mode', 'prefer_a');
+    bindTravelMode('b-travel-mode', 'prefer_b');
+    bindTravelMode('a-recalc-mode', 'prefer_a');
+    bindTravelMode('b-recalc-mode', 'prefer_b');
+
+    // ══════════════════════════════════════════════
+    // 搜索
+    // ══════════════════════════════════════════════
+    document.getElementById('search-btn').addEventListener('click', async () => {
+      const { a_work, a_home, b_work, b_home } = state;
+      if (!a_work || !a_home || !b_work || !b_home) {
+        alert('请选择 A 和 B 的下班地点和回家地点！');
+        return;
+      }
+
+      // 显示加载
+      document.getElementById('loading-bar').classList.add('show');
+      document.getElementById('results-section').classList.remove('show');
+
+      const body = {
+        location_a_work: a_work, location_a_home: a_home,
+        location_b_work: b_work, location_b_home: b_home,
+        query:           document.getElementById('query-input').value,
+        city:            document.getElementById('city-input').value,
+        prefer_a:        state.prefer_a,
+        prefer_b:        state.prefer_b,
+        departure_time:  document.getElementById('departure-time').value || null,
+        max_detour_minutes: 15,
+      };
+
+      const res  = await fetch('/api/v2/search', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const data = await res.json();
+
+      document.getElementById('loading-bar').classList.remove('show');
+
+      if (data.session_id) {
+        state.session_id = data.session_id;
+        renderResults(data);
+      } else {
+        alert('搜索出错：' + (data.message || JSON.stringify(data)));
+      }
+    });
+
+    // ══════════════════════════════════════════════
+    // 渲染结果（待 M2/M3 完善）
+    // ══════════════════════════════════════════════
+    function renderResults(data) {
+      document.getElementById('results-section').classList.add('show');
+      const list = document.getElementById('results-list');
+      list.innerHTML = '<p style="color:#888; font-size:14px;">搜索逻辑将在 M2 阶段实现，目前返回骨架占位。</p>';
+      document.getElementById('recalc-panel').style.display = 'block';
+    }
+
+    // ══════════════════════════════════════════════
+    // 路线重算
+    // ══════════════════════════════════════════════
+    document.getElementById('recalc-btn').addEventListener('click', async () => {
+      if (!state.session_id) return;
+      const res  = await fetch('/api/v2/routes', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ session_id: state.session_id, prefer_a: state.prefer_a, prefer_b: state.prefer_b })
+      });
+      const data = await res.json();
+      console.log('重算结果：', data);
+    });
+
+    // ══════════════════════════════════════════════
+    // 拖拽分界线
+    // ══════════════════════════════════════════════
+    const divider   = document.getElementById('divider');
+    const panelLeft = document.getElementById('panel-left');
+    let isDragging  = false;
+
+    divider.addEventListener('mousedown', () => { isDragging = true; document.body.style.cursor = 'col-resize'; });
+    document.addEventListener('mousemove', e => {
+      if (!isDragging) return;
+      const newW = e.clientX;
+      if (newW > 280 && newW < 700) panelLeft.style.width = newW + 'px';
+    });
+    document.addEventListener('mouseup', () => { isDragging = false; document.body.style.cursor = ''; });
+
+    // ══════════════════════════════════════════════
+    // 启动
+    // ══════════════════════════════════════════════
+    initMap();
+  </script>
+</body>
+</html>

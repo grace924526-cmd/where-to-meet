@@ -1,0 +1,34 @@
+# 环境变量 / 密钥（严禁提交）
+.env
+*.env
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 测试产物
+*.log
+*.tmp
+
+# 无关文件
+*.zip

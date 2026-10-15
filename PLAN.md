@@ -50,9 +50,9 @@ Flask 后端（app_v2.py，端口 5000）
             │     ④ 评分 + 排序 + fallback
             │     ⑤ 写入 session 缓存
             │
-            ├── [M3 待接入] Agent1（LLM）：从 query 提取 keyword / min_rating / weights
-            ├── [M3 待接入] Agent2（LLM + 工具）：find_midpoint / search_pois_nearby
-            └── [M3 待接入] Agent3（LLM）：生成 2-4 句推荐语
+            ├── [M3 ✅] Agent1（LLM）：从 query 提取 keyword / min_rating / weights
+            ├── [M3 ✅] Agent2（LLM + 工具）：搜索 POI + 语义筛选，不重排序
+            └── [M3 ✅] Agent3（LLM）：生成 2-4 句推荐语，不计算、不重排序
       │
       └── POST /api/v2/routes        → 路线重算（复用 session 缓存，不重新搜 POI）
           GET  /api/v2/session/<id>  → 调试用，返回 session 摘要
@@ -76,6 +76,7 @@ B 绕路时间 = 行程(B下班地 → 餐厅 → B家) - 行程(B下班地 → 
         - w₂ × (A_detour + B_detour)
         - w₃ × |A_detour - B_detour|
 
+  w₁/w₂/w₃ 是独立系数，**不做归一化**（见第 5 节关键决策）。
   M2 阶段：w₁=1.0，w₂=0.3，w₃=0.2（硬编码默认值）
   M3 阶段：由 Agent1 从用户 query 中动态提取
 ```
@@ -109,28 +110,29 @@ B 绕路时间 = 行程(B下班地 → 餐厅 → B家) - 行程(B下班地 → 
 
 ```
 /Users/sunxiaoran/Desktop/grace/claude/   ← 项目根目录
-├── app_v2.py            # 后端主文件【⚠️ 当前为 M1 骨架，见下方说明】
+├── app_v2.py            # 后端主文件（M2+M3 完整实现）
 ├── requirements.txt     # 依赖锁定
-├── start.sh             # 一键启动（python3 venv + pip install + python app_v2.py）
+├── start.sh             # 一键启动
 ├── .env                 # API Keys（不提交 git）
-├── .env.example         # Key 模板【⚠️ 待更新，见"已知问题"】
+├── .env.example         # Key 模板
 ├── PLAN.md              # 本文档
+├── agents/              # M3 Agent 模块
+│   ├── agent1_parser.py     # Agent1：query 解析
+│   ├── agent2_searcher.py   # Agent2：POI 搜索 + LLM 筛选
+│   └── agent3_summary.py    # Agent3：推荐语生成
+├── core/                # 共享工具层
+│   ├── __init__.py
+│   └── geo_utils.py     # 地理工具函数（app_v2.py 和 agent2 共用）
+├── docs/                # 测试记录
+│   └── e2e_test_m3.json # M3 端到端测试请求/响应存档
 ├── static/
 │   ├── index.html       # 前端单页（M1 完整 KABOOM! UI 骨架）
 │   └── css/
 │       └── comic-ui.css # KABOOM! UI 原版 CSS（MIT，直接引用）
-└── meetmid-v2/          # M2 开发目录（本次会话产出，待合并到根目录）
-    ├── app_v2.py        # ✅ M2 完整后端实现（核心代码在此）
-    ├── .env             # M2 使用的 Keys（含 ZHIPU + AMAP_JS_SECURITY_KEY）
-    ├── .env.example
-    ├── requirements.txt
-    ├── start.sh
-    └── static/
-        └── index.html   # 极简骨架（仅用于 M2 本地测试，无 KABOOM! UI）
+└── meetmid-v2/          # M2 原始开发目录（保留备用，不再修改）
 ```
 
-> **重要：** `meetmid-v2/app_v2.py` 是 M2 的完整实现，根目录 `app_v2.py` 仍是 M1 骨架。  
-> M2 合并任务：将 `meetmid-v2/app_v2.py` 替换根目录 `app_v2.py`，同步更新根目录 `.env.example`。这是 M3 开始前的第一步。
+> **M2+M3 已完成：** 根目录 `app_v2.py` 是当前生产文件，包含完整 M2 路线计算逻辑和 M3 三 Agent 流水线。`meetmid-v2/` 目录保留为历史备份，不再修改。
 
 ---
 
@@ -235,9 +237,12 @@ B 绕路时间 = 行程(B下班地 → 餐厅 → B家) - 行程(B下班地 → 
       "b_route":        "（同 a_route 结构）"
     }
   ],
-  "fallback_results": []
+  "fallback_results": [],
+  "summary": "海底捞评分4.8，人均120元，A绕路57分钟，B绕路48分钟..."
 }
 ```
+
+> `summary` 字段为 M3 新增，由 Agent3 生成自然语言推荐语。M4 前端直接展示此字段内容。
 
 #### `/api/v2/routes` 请求/响应结构
 
@@ -311,15 +316,17 @@ sessions[session_id] = {
 - **M2 阶段权重硬编码**：w1=1.0，w2=0.3，w3=0.2；M3 Agent1 接入后改为 LLM 从 query 动态提取（如用户强调"公平"则 w3 加大，强调"快"则 w2 加大）。
 - **LLM 从 DeepSeek 换为智谱 GLM-4-Flash**：免费额度满足开发需求，且兼容 OpenAI SDK，只需改 `base_url` 和 `model` 参数，迁移成本为零。
 
-**M3（预定决策）**
+**M3（已完成）**
 - **Agent2 工具返回压缩摘要，完整数据存 Python 侧**：POI 原始数据体积大，全量传给 LLM 会导致 token 爆炸，只给 LLM 看「名称/地址/评分/距离」摘要即可完成规划任务。
 - **"均不顺路"时 fallback 到中点算法**：不让用户空手而归，在界面上单独展示为"中间点推荐"分区，明确告知无顺路结果。
+- **w1/w2/w3 保持独立系数，不做归一化**：三个权重量纲不同（w1 对应 0~5 的评分，w2/w3 对应分钟数），强制归一化到 [0,1] 会破坏原有量纲关系，且 Agent1 的 System Prompt 已按独立取值范围（w1: 0.5~2.0，w2: 0.1~0.8，w3: 0.1~0.5）指导 LLM，独立调节语义更直观，测试中效果符合预期。
+- **LLM 选用智谱 GLM-4-Flash，DeepSeek 作备选**：GLM-4-Flash 免费档无需付费、兼容 OpenAI SDK（只改 `base_url` 和 `model`），满足开发阶段需求。若需切换，备选为 `deepseek-chat`（`base_url=https://api.deepseek.com/v1`），迁移成本极低。
 
 ---
 
 ## 6. 已知问题与待办
 
-### 待解决（开始 M3 前必须完成）
+### M3 完成前必须完成（✅ 已全部解决）
 
 1. ✅ **M2 代码已合并到根目录**（M3 会话已完成）  
    `meetmid-v2/app_v2.py` → 根目录 `app_v2.py`，`meetmid-v2/` 目录保留备用。
@@ -328,6 +335,17 @@ sessions[session_id] = {
    移除 `DEEPSEEK_API_KEY`，补入 `ZHIPU_API_KEY`、`ZHIPU_BASE_URL`、`AMAP_JS_SECURITY_KEY`。
 
 3. ✅ **`/api/config` 已返回 `amap_js_security_key`**（合并后自动修复）
+
+4. ✅ **`app_v2.py` 重复定义已清理**（refactor commit `6315e63`）  
+   `lnglat_to_str` / `haversine_km` / `find_midpoint` / `dynamic_radius` / `search_pois_nearby` 从 `app_v2.py` 删除，统一由 `core/geo_utils.py` 提供，`import math` 同步移除。
+
+### M4 开始前产品调优点（待评估）
+
+5. ⬜ **搜索半径 5000m 是否偏大**：当前 `dynamic_radius()` 上限固定为 5000m，对于 A/B 工作地距离较近（< 2km）的场景，半径可能命中过多无关 POI，影响 LLM 筛选质量。可考虑增加下限（如最小 500m）或根据城市密度动态调整。
+
+6. ⬜ **Agent2 高德 POI 上限 20 个**：`place/around` 每次最多拉 20 条，LLM 筛选后最多保留 10 个。若目标区域同类型餐厅密集（如大量火锅店），20 个可能不够覆盖高分候选。可增加 page 翻页逻辑，或提高 `offset` 参数。
+
+7. ⬜ **POI 搜索为空时的用户反馈**：当前 `fetch_pois` 返回空列表时，接口最终返回 `{total: 0, results: [], fallback_results: []}`，前端需对此情况做友好提示（"未找到相关餐厅，请尝试修改关键词或扩大范围"），该逻辑待 M4 实现。
 
 ---
 
@@ -495,7 +513,8 @@ LLM 失败或返回过短（< 20 字）时，最多重试 2 次（退避 1s/2s�
 ### 共享工具层
 
 **文件：** `core/geo_utils.py`  
-**职责：** 存放 `app_v2.py` 和 `agents/agent2_searcher.py` 共同需要的地理工具函数，避免循环导入。
+**职责：** 存放 `app_v2.py` 和 `agents/agent2_searcher.py` 共同需要的地理工具函数，避免循环导入。  
+**清理状态：** `app_v2.py` 中原有的重复定义已于 refactor commit `6315e63` 删除，两个文件均从此模块导入。
 
 | 函数 | 说明 |
 |---|---|
@@ -555,3 +574,5 @@ LLM 失败或返回过短（< 20 字）时，最多重试 2 次（退避 1s/2s�
 - `summary` 字段正确引用真实数据，无编造数字
 
 **说明：** 测试坐标跨度较大（A/B 工作地直线距离约 12km，各自基准路线 ~61/78 分钟），导致所有结果均为 `none` 并触发 fallback，这是**预期行为**，fallback 机制运作正常。
+
+**完整请求/响应存档：** [`docs/e2e_test_m3.json`](docs/e2e_test_m3.json)（含 request body、response 元数据、前三名 fallback 店信息及 summary 字段）。
