@@ -14,6 +14,11 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
 from openai import OpenAI
+from agents.agent1_parser import parse_query, agent1_to_search_params
+from agents.agent2_searcher import search_candidates
+from agents.agent3_summary import generate_summary
+from core.geo_utils import (lnglat_to_str, haversine_km, find_midpoint,
+                             dynamic_radius, search_pois_nearby)
 
 load_dotenv()
 
@@ -414,8 +419,12 @@ def search():
     prefer_b  = body.get("prefer_b", "transit")
     threshold = int(body.get("max_detour_minutes", DEFAULT_MAX_DETOUR))
 
-    # M2 使用默认权重；M3 由 Agent1 从 query 中提取
-    weights = DEFAULT_WEIGHTS.copy()
+    # ── M3 Agent1：从 query 提取关键词 / 最低评分 / 排序权重 ──────────────
+    agent1_raw    = parse_query(query)
+    search_params = agent1_to_search_params(agent1_raw)
+    keyword       = search_params["keyword"]
+    min_rating    = search_params["min_rating"]
+    weights       = search_params["weights"]
 
     a_work_str = lnglat_to_str(a_work)
     a_home_str = lnglat_to_str(a_home)
@@ -429,14 +438,12 @@ def search():
     baseline_a_sec = f_base_a.result()
     baseline_b_sec = f_base_b.result()
 
-    # ── 3. 计算搜索中心 & 半径，搜索 POI ─────────────────────────────────
-    center = find_midpoint(a_work, b_work)
-    radius = dynamic_radius(a_work, b_work)
+    # ── 3. M3 Agent2：搜索中心 + 高德 POI + LLM 语义筛选 ────────────────
+    agent2_result = search_candidates(a_work, b_work, search_params, city=city, query=query)
+    pois   = agent2_result["pois"]
+    center = agent2_result["center"]
+    radius = agent2_result["radius"]
 
-    # keyword 提取：M2 直接用 query；M3 由 Agent1 精炼
-    keyword = query
-
-    pois = search_pois_nearby(center, keyword, radius, min_rating=0.0, city=city)
     if not pois:
         return jsonify({"error": "未找到符合条件的餐厅，请调整搜索词或扩大范围"}), 404
 
@@ -466,13 +473,16 @@ def search():
     # ── 6. Fallback：若全部均不顺路，补充一个"中间点推荐"分区 ──────────
     fallback_results = []
     if all(p["detour_label"] == "none" for p in ranked):
-        fb_pois = search_pois_nearby(center, keyword, radius, city=city)
+        fb_pois = search_pois_nearby(center, search_params.get("keyword", query), radius, city=city)
         for p in fb_pois:
             p["detour_label"] = "fallback"
             p["score"] = p.get("rating", 0)
             p["a_route"] = {}
             p["b_route"] = {}
         fallback_results = sorted(fb_pois, key=lambda p: -p["score"])[:10]
+
+    # ── M3 Agent3：生成自然语言推荐语 ────────────────────────────────────
+    summary = generate_summary(ranked or fallback_results, query=query)
 
     # ── 7. 存 Session ────────────────────────────────────────────────────
     session_id = str(uuid.uuid4())
@@ -499,6 +509,7 @@ def search():
         "results":          ranked,
         "fallback_results": fallback_results,
         "total":            len(ranked),
+        "summary":          summary,
     })
 
 

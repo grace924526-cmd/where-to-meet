@@ -293,7 +293,7 @@ sessions[session_id] = {
 |---|---|---|
 | M1 | 项目初始化：Flask 骨架、前端 KABOOM! UI 骨架、KABOOM! UI CSS 接入 | ✅ 完成 |
 | M2 | 后端核心：四点输入 + 绕路时间计算 + 路线重算逻辑 | ✅ 完成 |
-| M3 | Multi-Agent 流水线：Agent1/2/3 接入智谱 GLM-4-Flash | ⬜ 未开始 |
+| M3 | Multi-Agent 流水线：Agent1/2/3 接入智谱 GLM-4-Flash | ✅ 完成 |
 | M4 | 前端结果展示：顺路标签、结果卡片、地图标记、中间点 fallback 区 | ⬜ 未开始 |
 | M5 | UI 精修：卡片选中高亮、附近搜索面板、加载动效 | ⬜ 未开始 |
 | M6 | 联调测试、边界情况处理、README 补全 | ⬜ 未开始 |
@@ -333,7 +333,65 @@ sessions[session_id] = {
 
 ## 7. M3 Agent 详细设计
 
-### Agent1 — Query 解析器
+### Agent2 — 搜索 Agent
+
+**文件：** `agents/agent2_searcher.py`  
+**模型：** `glm-4-flash`（语义筛选环节）  
+**职责：** 给定 A/B 双方工作地坐标 + Agent1 的搜索参数，搜索候选餐厅 POI，经 LLM 语义筛选后返回供绕路计算使用的候选列表。
+
+#### 工具清单
+
+| 工具函数 | 调用的底层函数 | 高德 API 调用 | 说明 |
+|---|---|---|---|
+| `get_search_center(a_work, b_work)` | `find_midpoint()` + `dynamic_radius()` | 无 | 计算搜索中心坐标和动态半径（最大 5000m） |
+| `fetch_pois(center, keyword, radius, min_rating, city)` | `search_pois_nearby()` | `place/around` | 返回最多 20 个完整 POI dict，完整数据只存 Python 侧 |
+
+#### 主入口
+
+```python
+search_candidates(a_work, b_work, search_params, city, query) -> dict
+```
+
+**输入：**
+
+| 参数 | 类型 | 来源 |
+|---|---|---|
+| `a_work` / `b_work` | `{"lng": float, "lat": float}` | 用户输入的 A/B 工作地坐标 |
+| `search_params` | `{"keyword": str, "min_rating": float, "weights": {...}}` | `agent1_to_search_params()` 输出 |
+| `city` | str | 用户输入的城市 |
+| `query` | str | 原始用户 query（供 LLM 语义筛选） |
+
+**输出：**
+
+```json
+{
+  "pois":           [...],   // 筛选后完整 POI 列表，供绕路计算，最多 10 个
+  "center":         {...},   // 搜索中心坐标
+  "radius":         5000,    // 搜索半径（米）
+  "total_found":    20,      // 高德原始返回数量
+  "total_selected": 10,      // LLM 筛选后数量
+  "llm_filtered":   true     // false = LLM 失败，降级返回全部
+}
+```
+
+#### 数据分层纪律（核心设计）
+
+- **完整 POI 数据**（坐标、营业时间、loc_str 等）：只存 Python 侧 `full_pois` 变量，不传给 LLM
+- **LLM 压缩摘要**（token 最小化）：每条只含 `{idx, name, address, rating, cost, dist_to_center_m}`
+- LLM 返回 `selected_idx` 整数列表，Python 用它从 `full_pois` 中取出完整数据
+
+#### LLM 筛选降级策略
+
+GLM-4-Flash 返回格式错误或超时时，最多重试 2 次（退避 1s/2s），全部失败后直接返回高德原始全部 POI（最多 20 个），`llm_filtered=False`。
+
+#### Agent1 → Agent2 接力测试结果
+
+query: `"评分高的火锅店"`，A（国贸）↔ B（中关村）
+
+- Agent1 耗时：~2.5s，提取 `keyword="火锅"，min_rating=4.5`
+- Agent2 耗时：~2.8s，高德搜到 20 个，LLM 筛选后保留 10 个（全部 ≥4.7 分）
+- 总耗时：~5.25s
+- 淘汰分析：LLM 保留了所有 4.8 分（7 家）+ 前 3 家 4.7 分，淘汰的 10 家均为评分相对靠后或距中心更远的 4.7 分店铺（含人均 444 元、402 元的高价异常值）
 
 **文件：** `agents/agent1_parser.py`  
 **模型：** `glm-4-flash`（智谱，免费版）  
@@ -400,3 +458,100 @@ keyword       = search_params["keyword"]
 min_rating    = search_params["min_rating"]
 weights       = search_params["weights"]
 ```
+
+---
+
+### Agent3 — 总结 Agent（纯生成，无工具）
+
+**文件：** `agents/agent3_summary.py`  
+**模型：** `glm-4-flash`  
+**职责：** 根据排序后候选列表 + 原始 query，生成 2~4 句自然语言推荐语。不做任何计算或重排序。
+
+#### 输入（`generate_summary()` 参数）
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `ranked_pois` | `list[dict]` | `enrich_and_rank()` 输出，每项含 `name/rating/cost/a_route/b_route/detour_label/score` |
+| `query` | str | 原始用户 query |
+
+**传给 LLM 的压缩摘要格式（Top 5）：**
+
+```
+#N name | 评分:X | 人均:Y元 | A绕路:Zmin | B绕路:Wmin | 顺路:标签文字
+```
+
+完整坐标等不传给 LLM。
+
+#### 输出
+
+纯字符串，2~4 句推荐语。要求：引用真实数字，标记为「仅一方顺路」的候选如实说明，不用营销腔。
+
+#### 降级策略
+
+LLM 失败或返回过短（< 20 字）时，最多重试 2 次（退避 1s/2s），全部失败使用模板兜底：`"根据「{query}」共找到 N 个候选，已按评分和绕路时间综合排序，「{name}」综合表现最佳。"`
+
+---
+
+### 共享工具层
+
+**文件：** `core/geo_utils.py`  
+**职责：** 存放 `app_v2.py` 和 `agents/agent2_searcher.py` 共同需要的地理工具函数，避免循环导入。
+
+| 函数 | 说明 |
+|---|---|
+| `lnglat_to_str(loc)` | dict → `"lng,lat"` 字符串 |
+| `haversine_km(a, b)` | 两点直线距离（公里） |
+| `find_midpoint(a, b)` | 两点地理中心 |
+| `dynamic_radius(a, b)` | 搜索半径（最大 5000m） |
+| `search_pois_nearby(...)` | 高德 place/around，返回最多 20 个 POI |
+
+---
+
+### `/api/v2/search` M3 完整串联流程
+
+```
+用户请求
+  │
+  ├── Agent1 parse_query(query)          → keyword / min_rating / w1/w2/w3
+  │     agent1_to_search_params()        → {keyword, min_rating, weights{}}
+  │
+  ├── 并发计算基准路线（A→家，B→家）
+  │
+  ├── Agent2 search_candidates()
+  │     工具1 get_search_center()        → center / radius（纯数学，无API）
+  │     工具2 fetch_pois()               → 高德 place/around，完整POI存Python侧
+  │     LLM 语义筛选 _llm_filter()       → selected_idx（最多10个）
+  │
+  ├── M2 calc_detour_for_poi() × N       → A/B 绕路时间（高德路线 API）
+  ├── M2 enrich_and_rank()               → 顺路标签 + 综合评分排序
+  ├── fallback（若全部 none）
+  │
+  ├── Agent3 generate_summary()          → 2~4句推荐语
+  │
+  └── 返回 JSON（含 summary 字段）
+```
+
+**响应新增字段（M3 接入后）：**
+
+```json
+{
+  "summary": "海底捞和南门涮肉评分都是 4.8，两人绕路都在 12 分钟以内..."
+}
+```
+
+#### M3 端到端测试结果
+
+**测试时间：** M3 会话，三 Agent 串联后
+
+**输入：**
+- A_work: 国贸 (116.4615, 39.9087) → A_home: 大兴 (116.4074, 39.8673)
+- B_work: 中关村 (116.3097, 39.9835) → B_home: 上地 (116.2765, 40.0353)
+- query: `"评分高的火锅店"`，prefer: transit
+
+**结果：** HTTP 200，23.4s
+
+- 所有 10 个结果 `detour_label: "none"`（绕路 38~88 分钟，远超 15 分钟阈值）
+- fallback 正常触发，返回按评分降序的 10 家店
+- `summary` 字段正确引用真实数据，无编造数字
+
+**说明：** 测试坐标跨度较大（A/B 工作地直线距离约 12km，各自基准路线 ~61/78 分钟），导致所有结果均为 `none` 并触发 fallback，这是**预期行为**，fallback 机制运作正常。
