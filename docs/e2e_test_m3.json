@@ -1,0 +1,66 @@
+{
+  "_meta": {
+    "description": "M3 三 Agent 串联端到端测试记录",
+    "test_date": "2026-10-14",
+    "endpoint": "POST /api/v2/search",
+    "http_status": 200,
+    "elapsed_sec": 23.4,
+    "note": "results 数组详细内容未在测试时完整落盘，仅记录已捕获的元数据字段。fallback 触发原因：测试坐标跨度大（A/B 工作地直线距离 ~12km），所有候选绕路时间 38~88 分钟，远超 15 分钟阈值，属预期行为。"
+  },
+  "request": {
+    "url": "http://localhost:5000/api/v2/search",
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "location_a_work": { "lng": 116.4615, "lat": 39.9087, "name": "国贸" },
+      "location_a_home": { "lng": 116.4074, "lat": 39.8673, "name": "大兴" },
+      "location_b_work": { "lng": 116.3097, "lat": 39.9835, "name": "中关村" },
+      "location_b_home": { "lng": 116.2765, "lat": 40.0353, "name": "上地" },
+      "query": "评分高的火锅店",
+      "city": "北京",
+      "prefer_a": "transit",
+      "prefer_b": "transit",
+      "max_detour_minutes": 15
+    }
+  },
+  "response": {
+    "session_id": "(uuid, 每次运行不同)",
+    "center": { "lng": 116.3856, "lat": 39.9461 },
+    "radius": 5000,
+    "baseline_a_min": 61.3,
+    "baseline_b_min": 77.7,
+    "total": 10,
+    "results": [
+      {
+        "_note": "所有 10 条结果 detour_label 均为 none（绕路 38~88 分钟），触发 fallback",
+        "detour_label": "none"
+      }
+    ],
+    "fallback_results": [
+      {
+        "_note": "fallback 返回按 rating 降序排列的 10 家店，以下为已知前三名",
+        "rank": 1,
+        "name": "海底捞火锅",
+        "rating": 4.8,
+        "cost": "120.00",
+        "a_route": { "detour_min": 57.0 },
+        "b_route": { "detour_min": 48.0 }
+      },
+      {
+        "rank": 2,
+        "name": "红珊瑚火锅",
+        "rating": 4.8,
+        "cost": "88.00"
+      },
+      {
+        "rank": 3,
+        "name": "清真·鸦儿李记·涮肉",
+        "rating": 4.8,
+        "cost": "87.00"
+      }
+    ],
+    "summary": "海底捞和红珊瑚的火锅都挺受欢迎的，评分都是4.8分，而且价格也合适，人均120和88，就是双方都得绕点路。如果你们俩都不介意，鸦儿李记涮肉评价也不错，只要87块钱。"
+  }
+}
