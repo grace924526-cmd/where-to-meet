@@ -284,7 +284,7 @@
         <div class="loading-dots">
           <span></span><span></span><span></span>
         </div>
-        <p style="font-family:'Bangers',cursive; font-size:20px; margin-top:8px;">正在计算顺路方案...</p>
+        <p id="loading-text" style="font-family:'Bangers',cursive; font-size:20px; margin-top:8px; transition: all 0.3s;">正在计算顺路方案...</p>
       </div>
 
       <!-- 结果区 -->
@@ -349,8 +349,31 @@
       prefer_a: 'auto', prefer_b: 'auto',
       session_id: null,
       map: null,
-      markers: [],
+      markers: [],       // AMap.Marker 实例列表
+      infoWindow: null,  // 当前打开的信息窗
     };
+
+    // ══════════════════════════════════════════════
+    // 输入校验 ── 按钮联动
+    // ══════════════════════════════════════════════
+    function refreshSearchBtn() {
+      const btn = document.getElementById('search-btn');
+      const missing = [];
+      if (!state.a_work) missing.push('A 下班地点');
+      if (!state.a_home) missing.push('A 回家地点');
+      if (!state.b_work) missing.push('B 下班地点');
+      if (!state.b_home) missing.push('B 回家地点');
+
+      if (missing.length === 0) {
+        btn.disabled = false;
+        btn.style.opacity = '';
+        btn.title = '';
+      } else {
+        btn.disabled = true;
+        btn.style.opacity = '0.45';
+        btn.title = '请先从联想列表选择：' + missing.join('、');
+      }
+    }
 
     // ══════════════════════════════════════════════
     // 高德地图初始化
@@ -359,7 +382,11 @@
       const res = await fetch('/api/config');
       const cfg = await res.json();
       const jsKey = cfg.amap_js_key;
+      const secKey = cfg.amap_js_security_key;
       if (!jsKey) { document.getElementById('map-container').textContent = '⚠️ 未配置 AMAP_JS_KEY'; return; }
+
+      // 安全码注入（JS API 2.0 要求）
+      window._AMapSecurityConfig = { securityJsCode: secKey || '' };
 
       const script = document.createElement('script');
       script.src = `https://webapi.amap.com/maps?v=2.0&key=${jsKey}&callback=onMapLoad`;
@@ -372,6 +399,7 @@
         center: [116.397, 39.909],
         mapStyle: 'amap://styles/dark',
       });
+      state.infoWindow = new AMap.InfoWindow({ offset: new AMap.Pixel(0, -30) });
     };
 
     // ══════════════════════════════════════════════
@@ -383,6 +411,10 @@
       let debounceTimer;
 
       input.addEventListener('input', () => {
+        // 用户手动改输入 → 清除已选地址
+        state[stateKey] = null;
+        refreshSearchBtn();
+
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(async () => {
           const kw = input.value.trim();
@@ -412,6 +444,8 @@
         if (lng && lat) {
           state[stateKey] = { lng, lat, name };
           input.value = name;
+          input.style.borderColor = 'var(--k-green)'; // 已选中视觉反馈
+          refreshSearchBtn();
         }
         suggest.classList.remove('open');
       });
@@ -426,6 +460,9 @@
     bindSuggest('a-home-input', 'a-home-suggest', 'a_home');
     bindSuggest('b-work-input', 'b-work-suggest', 'b_work');
     bindSuggest('b-home-input', 'b-home-suggest', 'b_home');
+
+    // 初始化时禁用按钮
+    refreshSearchBtn();
 
     // ══════════════════════════════════════════════
     // 出行方式切换
@@ -447,17 +484,48 @@
     bindTravelMode('b-recalc-mode', 'prefer_b');
 
     // ══════════════════════════════════════════════
+    // Loading 动态文案 + 超时提示
+    // ══════════════════════════════════════════════
+    const LOADING_MSGS = [
+      '正在计算双方的基准路线…',
+      'AI 正在筛选候选地点…',
+      '正在计算各候选的绕路时间…',
+      '综合评分排序中…',
+      'AI 正在生成推荐语…',
+    ];
+    let loadingTimer = null;
+    let loadingMsgTimer = null;
+
+    function showLoading() {
+      const bar = document.getElementById('loading-bar');
+      const txt = document.getElementById('loading-text');
+      bar.classList.add('show');
+      let idx = 0;
+      txt.textContent = LOADING_MSGS[0];
+      loadingMsgTimer = setInterval(() => {
+        idx = (idx + 1) % LOADING_MSGS.length;
+        txt.textContent = LOADING_MSGS[idx];
+      }, 8000);
+      // 30 秒超时提示
+      loadingTimer = setTimeout(() => {
+        txt.textContent = '还在努力计算中，请稍候 🔧';
+      }, 30000);
+    }
+
+    function hideLoading() {
+      document.getElementById('loading-bar').classList.remove('show');
+      clearInterval(loadingMsgTimer);
+      clearTimeout(loadingTimer);
+    }
+
+    // ══════════════════════════════════════════════
     // 搜索
     // ══════════════════════════════════════════════
     document.getElementById('search-btn').addEventListener('click', async () => {
       const { a_work, a_home, b_work, b_home } = state;
-      if (!a_work || !a_home || !b_work || !b_home) {
-        alert('请选择 A 和 B 的下班地点和回家地点！');
-        return;
-      }
+      if (!a_work || !a_home || !b_work || !b_home) return; // 按钮已禁用，双重保险
 
-      // 显示加载
-      document.getElementById('loading-bar').classList.add('show');
+      showLoading();
       document.getElementById('results-section').classList.remove('show');
 
       const body = {
@@ -471,27 +539,256 @@
         max_detour_minutes: 15,
       };
 
-      const res  = await fetch('/api/v2/search', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-      const data = await res.json();
-
-      document.getElementById('loading-bar').classList.remove('show');
-
-      if (data.session_id) {
-        state.session_id = data.session_id;
-        renderResults(data);
-      } else {
-        alert('搜索出错：' + (data.message || JSON.stringify(data)));
+      try {
+        const res  = await fetch('/api/v2/search', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        const data = await res.json();
+        hideLoading();
+        if (data.session_id) {
+          state.session_id = data.session_id;
+          renderResults(data);
+        } else {
+          showError('搜索出错：' + (data.message || data.error || JSON.stringify(data)));
+        }
+      } catch(e) {
+        hideLoading();
+        showError('网络错误，请检查后端服务是否启动：' + e.message);
       }
     });
 
     // ══════════════════════════════════════════════
-    // 渲染结果（待 M2/M3 完善）
+    // 渲染结果
     // ══════════════════════════════════════════════
-    function renderResults(data) {
+
+    /** 顺路标签文字 + 颜色 */
+    const BADGE_MAP = {
+      both: { text: '✅ 双方顺路', cls: 'both' },
+      one:  { text: '⚠️ 单方顺路', cls: 'one'  },
+      none: { text: '❌ 均不顺路', cls: 'none' },
+    };
+
+    /** 错误提示卡片 */
+    function showError(msg) {
+      const sec = document.getElementById('results-section');
+      document.getElementById('results-list').innerHTML =
+        `<div class="k-card" style="border-color:var(--k-red); background:#fff5f5;">
+           <p style="font-family:'Bangers',cursive; font-size:18px; color:var(--k-red);">⚠️ 出了点问题</p>
+           <p style="font-size:14px; margin-top:6px;">${msg}</p>
+         </div>`;
+      document.getElementById('midpoint-section').style.display = 'none';
+      document.getElementById('recalc-panel').style.display = 'none';
+      sec.classList.add('show');
+    }
+
+    /** 空结果提示 */
+    function renderEmpty() {
+      document.getElementById('results-title').textContent = '🔍 搜索结果';
+      document.getElementById('results-list').innerHTML =
+        `<div class="k-card" style="background:var(--k-yellow);">
+           <p style="font-family:'Bangers',cursive; font-size:20px;">未找到相关餐厅</p>
+           <p style="font-size:14px; margin-top:8px; line-height:1.6;">
+             可以试试：<br>
+             · 修改关键词（如"火锅"改"川菜"）<br>
+             · 检查城市填写是否正确<br>
+             · 放宽搜索条件，不限定菜系
+           </p>
+         </div>`;
+      document.getElementById('midpoint-section').style.display = 'none';
+      document.getElementById('recalc-panel').style.display = 'none';
       document.getElementById('results-section').classList.add('show');
-      const list = document.getElementById('results-list');
-      list.innerHTML = '<p style="color:#888; font-size:14px;">搜索逻辑将在 M2 阶段实现，目前返回骨架占位。</p>';
+    }
+
+    /** 单张结果卡片 HTML */
+    function renderCard(poi, index) {
+      const badge = BADGE_MAP[poi.detour_label] || BADGE_MAP.none;
+      const rating = poi.rating ? `⭐ ${poi.rating}` : '暂无评分';
+      const cost   = poi.cost   ? `💰 人均 ¥${poi.cost}` : '';
+      const aMin   = poi.a_route?.detour_min != null ? `${poi.a_route.detour_min.toFixed(0)} 分钟` : '—';
+      const bMin   = poi.b_route?.detour_min != null ? `${poi.b_route.detour_min.toFixed(0)} 分钟` : '—';
+      const aTot   = poi.a_route?.total_min   != null ? `全程 ${poi.a_route.total_min.toFixed(0)} 分钟` : '';
+      const bTot   = poi.b_route?.total_min   != null ? `全程 ${poi.b_route.total_min.toFixed(0)} 分钟` : '';
+
+      return `
+        <div class="k-card result-card" data-index="${index}" style="cursor:pointer;">
+          <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:8px;">
+            <div class="result-name">${index + 1}. ${poi.name}</div>
+            <span class="detour-badge ${badge.cls}" style="white-space:nowrap; flex-shrink:0;">${badge.text}</span>
+          </div>
+          <div class="result-address">${poi.address || ''}</div>
+          <div style="display:flex; gap:12px; font-size:14px; margin-bottom:8px; flex-wrap:wrap;">
+            <span>${rating}</span>
+            ${cost ? `<span>${cost}</span>` : ''}
+          </div>
+          <div class="route-row">
+            <div class="route-col">
+              <strong>A 绕路</strong><br>
+              <span style="font-size:18px; font-family:'Bangers',cursive;">${aMin}</span>
+              ${aTot ? `<br><small style="color:#777;">${aTot}</small>` : ''}
+            </div>
+            <div class="route-col" style="text-align:right;">
+              <strong>B 绕路</strong><br>
+              <span style="font-size:18px; font-family:'Bangers',cursive;">${bMin}</span>
+              ${bTot ? `<br><small style="color:#777;">${bTot}</small>` : ''}
+            </div>
+          </div>
+        </div>`;
+    }
+
+    /** 主渲染函数 */
+    function renderResults(data) {
+      const results  = data.results  || [];
+      const fallback = data.fallback_results || [];
+      const total    = data.total    || 0;
+
+      // 空结果
+      if (total === 0 && results.length === 0 && fallback.length === 0) {
+        renderEmpty();
+        updateMapMarkers(data);
+        return;
+      }
+
+      // ── 顺路推荐列表
+      const listEl = document.getElementById('results-list');
+      if (results.length > 0) {
+        document.getElementById('results-title').textContent =
+          `🎯 顺路推荐（共 ${results.length} 家）`;
+        listEl.innerHTML = results.map((poi, i) => renderCard(poi, i)).join('');
+      } else {
+        document.getElementById('results-title').textContent = '🎯 顺路推荐';
+        listEl.innerHTML = '<p style="color:#888; font-size:14px; padding:8px 0;">本次无顺路结果，已显示中间点推荐</p>';
+      }
+
+      // ── summary 推荐语条幅
+      if (data.summary) {
+        listEl.insertAdjacentHTML('afterbegin',
+          `<div class="k-card" style="background:var(--k-blue); color:var(--k-white); margin-bottom:16px; border-color:var(--k-ink);">
+             <p style="font-family:'Comic Neue',cursive; font-size:15px; line-height:1.7; margin:0;">
+               🤖 ${data.summary}
+             </p>
+           </div>`
+        );
+      }
+
+      // ── fallback 中间点推荐
+      const midSec  = document.getElementById('midpoint-section');
+      const midList = document.getElementById('midpoint-list');
+      if (fallback.length > 0) {
+        midList.innerHTML = fallback.map((poi, i) => renderCard(poi, i)).join('');
+        midSec.style.display = 'block';
+        // fallback 卡片的事件绑定（偏移 results.length）
+        midList.querySelectorAll('.result-card').forEach((el, i) => {
+          el.addEventListener('click', () => onCardClick(fallback[i], results.length + i));
+        });
+      } else {
+        midSec.style.display = 'none';
+      }
+
+      // ── 卡片点击事件
+      listEl.querySelectorAll('.result-card').forEach((el, i) => {
+        el.addEventListener('click', () => onCardClick(results[i], i));
+      });
+
+      // ── 显示路线重算面板
       document.getElementById('recalc-panel').style.display = 'block';
+
+      document.getElementById('results-section').classList.add('show');
+
+      // ── 更新地图标记
+      updateMapMarkers(data);
+    }
+
+    // ══════════════════════════════════════════════
+    // 地图标记
+    // ══════════════════════════════════════════════
+
+    /** 清除旧标记 */
+    function clearMarkers() {
+      state.markers.forEach(m => state.map && m.setMap(null));
+      state.markers = [];
+    }
+
+    /** 更新地图标记：搜索中心 + 候选餐厅 */
+    function updateMapMarkers(data) {
+      if (!state.map) return;
+      clearMarkers();
+
+      const allPois = [...(data.results || []), ...(data.fallback_results || [])];
+      if (allPois.length === 0 && !data.center) return;
+
+      // 搜索中心标记（星形）
+      if (data.center) {
+        const centerMarker = new AMap.Marker({
+          position: [data.center.lng, data.center.lat],
+          content: `<div style="
+            width:36px; height:36px; line-height:36px; text-align:center;
+            font-size:22px; background:var(--k-yellow,#FFE600);
+            border:3px solid #111; border-radius:50%;
+            box-shadow:3px 3px 0 #111;">⭐</div>`,
+          offset: new AMap.Pixel(-18, -18),
+          title: '搜索中心',
+        });
+        centerMarker.setMap(state.map);
+        state.markers.push(centerMarker);
+      }
+
+      // 候选餐厅标记（数字编号）
+      allPois.forEach((poi, i) => {
+        if (!poi.location) return;
+        const isResult  = i < (data.results || []).length;
+        const bg = isResult ? '#111' : '#666';
+        const marker = new AMap.Marker({
+          position: [poi.location.lng, poi.location.lat],
+          content: `<div style="
+            width:28px; height:28px; line-height:28px; text-align:center;
+            font-size:13px; font-weight:bold; color:#fff;
+            background:${bg}; border:2px solid #fff;
+            border-radius:50%; box-shadow:2px 2px 0 #111;
+            font-family:'Bangers',cursive;">${i + 1}</div>`,
+          offset: new AMap.Pixel(-14, -14),
+          title: poi.name,
+        });
+        // 点击标记打开信息窗
+        marker.on('click', () => openInfoWindow(poi, i));
+        marker.setMap(state.map);
+        state.markers.push(marker);
+      });
+
+      // 调整视野
+      if (allPois.length > 0) {
+        const lnglats = allPois
+          .filter(p => p.location)
+          .map(p => [p.location.lng, p.location.lat]);
+        if (data.center) lnglats.push([data.center.lng, data.center.lat]);
+        state.map.setFitView(state.markers, false, [40, 40, 40, 40]);
+      }
+    }
+
+    /** 打开信息窗 */
+    function openInfoWindow(poi, index) {
+      if (!state.map || !state.infoWindow) return;
+      const aMin = poi.a_route?.detour_min != null ? `${poi.a_route.detour_min.toFixed(0)}分钟` : '—';
+      const bMin = poi.b_route?.detour_min != null ? `${poi.b_route.detour_min.toFixed(0)}分钟` : '—';
+      const badge = BADGE_MAP[poi.detour_label] || BADGE_MAP.none;
+      state.infoWindow.setContent(
+        `<div style="font-family:'Comic Neue',cursive; padding:8px 12px; min-width:160px; background:#fff; border:3px solid #111; box-shadow:4px 4px 0 #111;">
+           <div style="font-family:'Bangers',cursive; font-size:18px; margin-bottom:4px;">${index + 1}. ${poi.name}</div>
+           <div style="font-size:12px; color:#555; margin-bottom:6px;">${poi.address || ''}</div>
+           <div style="font-size:13px;">A 绕路 <b>${aMin}</b> · B 绕路 <b>${bMin}</b></div>
+           <div style="margin-top:4px; font-size:12px;">${badge.text}</div>
+         </div>`
+      );
+      state.infoWindow.open(state.map, [poi.location.lng, poi.location.lat]);
+    }
+
+    /** 卡片点击 → 地图联动 */
+    function onCardClick(poi, index) {
+      // 卡片高亮
+      document.querySelectorAll('.result-card').forEach(el => el.classList.remove('selected'));
+      const cards = document.querySelectorAll('.result-card');
+      if (cards[index]) cards[index].classList.add('selected');
+
+      if (!state.map || !poi.location) return;
+      state.map.panTo([poi.location.lng, poi.location.lat]);
+      openInfoWindow(poi, index);
     }
 
     // ══════════════════════════════════════════════
@@ -499,12 +796,23 @@
     // ══════════════════════════════════════════════
     document.getElementById('recalc-btn').addEventListener('click', async () => {
       if (!state.session_id) return;
-      const res  = await fetch('/api/v2/routes', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ session_id: state.session_id, prefer_a: state.prefer_a, prefer_b: state.prefer_b })
-      });
-      const data = await res.json();
-      console.log('重算结果：', data);
+      showLoading();
+      try {
+        const res  = await fetch('/api/v2/routes', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ session_id: state.session_id, prefer_a: state.prefer_a, prefer_b: state.prefer_b })
+        });
+        const data = await res.json();
+        hideLoading();
+        if (data.session_id || data.results) {
+          renderResults(data);
+        } else {
+          showError('重算失败：' + (data.message || data.error || JSON.stringify(data)));
+        }
+      } catch(e) {
+        hideLoading();
+        showError('重算网络错误：' + e.message);
+      }
     });
 
     // ══════════════════════════════════════════════
