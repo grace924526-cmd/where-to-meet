@@ -24,7 +24,7 @@ from core.geo_utils import (lnglat_to_str, haversine_km, find_midpoint,
 
 load_dotenv()
 
-app = Flask(__name__, static_folder="static", static_url_path="")
+app = Flask(__name__, static_folder="static", static_url_path="/static")
 CORS(app)
 
 # ── 配置 ──────────────────────────────────────────────────────────────────────
