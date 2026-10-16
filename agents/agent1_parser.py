@@ -6,7 +6,10 @@ Agent1 — Query 解析器
 调用方式：
     from agents.agent1_parser import parse_query
     params = parse_query("找评分高的火锅，不要太贵")
+
+兼容 Python 3.9
 """
+from __future__ import annotations
 
 import os
 import json

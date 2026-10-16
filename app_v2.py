@@ -2,7 +2,10 @@
 下班顺路吃饭地点推荐 - 后端主文件
 M2：四点输入 + 绕路时间计算 + 评分排序
 M3：Multi-Agent 流水线（待填充）
+
+兼容 Python 3.9
 """
+from __future__ import annotations
 
 import os
 import uuid

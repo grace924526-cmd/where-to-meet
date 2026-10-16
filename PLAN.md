@@ -19,7 +19,7 @@
 
 | 类别 | 选型 | 备注 |
 |---|---|---|
-| 后端语言 | Python 3.10+ | 使用 `str \| None` 类型注解语法，不可低于 3.10 |
+| 后端语言 | Python 3.9+ | 使用 `from __future__ import annotations` 兼容 3.9，函数签名中的 `X \| Y` 联合类型语法均已通过此方式处理 |
 | Web 框架 | Flask 3.0 + flask-cors | |
 | LLM | 智谱 GLM-4-Flash | 免费，兼容 OpenAI SDK，通过 `base_url` 切换 |
 | 地图服务 | 高德地图 Web 服务 API + JS API 2.0 | Web 服务 Key 用于后端，JS Key 用于前端底图 |

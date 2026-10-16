@@ -16,7 +16,10 @@ Agent2 — 搜索 Agent
 调用方式：
   from agents.agent2_searcher import search_candidates
   pois = search_candidates(a_work, b_work, search_params, city="北京", query="火锅")
+
+兼容 Python 3.9
 """
+from __future__ import annotations
 
 import os, sys, math, json, time, re
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
