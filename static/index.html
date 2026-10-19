@@ -422,7 +422,7 @@
           const city = document.getElementById('city-input').value || '';
           const res  = await fetch('/api/geocode-suggest', {
             method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ keyword: kw, city })
+            body: JSON.stringify({ keywords: kw, city })
           });
           const data = await res.json();
           const tips = data.tips || [];
