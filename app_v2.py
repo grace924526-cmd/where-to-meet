@@ -93,7 +93,8 @@ def _call_cycling(origin: str, dest: str) -> int:
 
 def get_route_time(origin: str, dest: str, mode: str, city: str = "北京") -> int:
     """
-    获取路线时间（秒），失败返回 99999。带一次重试，规避高德公交 API QPS 限制。
+    获取路线时间（秒），失败返回 99999。
+    最多重试 2 次（退避 0.5s / 1.0s），规避高德公交 API QPS 限制。
     mode: transit | driving | cycling | walking | auto
     注意：transit 模式要求 city 非空；city 为空时自动降级为 driving。
     """
@@ -122,10 +123,13 @@ def get_route_time(origin: str, dest: str, mode: str, city: str = "北京") -> i
             return min(times) if times else 99999
         return 99999
 
+    _BACKOFFS = [0.5, 1.0]   # 最多 2 次重试，退避间隔
     try:
         result = _once()
-        if result == 99999:
-            _time.sleep(0.5)   # 遇到限速，等半秒重试一次
+        for backoff in _BACKOFFS:
+            if result < 99999:
+                break
+            _time.sleep(backoff)
             result = _once()
         return result
     except Exception:
@@ -163,11 +167,16 @@ def calc_detour_for_poi(
     对单个 POI 计算 A/B 绕路时间（顺序拉 4 条路线，避免嵌套线程池触发 QPS 限制）
     返回包含路线摘要和绕路时间的字典
     """
+    import time as _time
     poi_str = poi["loc_str"]
 
+    # 4 条腿之间加 100ms 间隔，分散 QPS 压力（外层 ThreadPoolExecutor 已并发 2 个 POI）
     a1 = get_route_time(a_work_str, poi_str,  prefer_a, city)
+    _time.sleep(0.1)
     a2 = get_route_time(poi_str,  a_home_str, prefer_a, city)
+    _time.sleep(0.1)
     b1 = get_route_time(b_work_str, poi_str,  prefer_b, city)
+    _time.sleep(0.1)
     b2 = get_route_time(poi_str,  b_home_str, prefer_b, city)
 
     a_via_sec = (a1 + a2) if (a1 < 99999 and a2 < 99999) else 99999

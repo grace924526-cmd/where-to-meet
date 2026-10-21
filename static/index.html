@@ -601,7 +601,8 @@
     function renderCard(poi, index) {
       const badge = BADGE_MAP[poi.detour_label] || BADGE_MAP.none;
       const rating = poi.rating ? `⭐ ${poi.rating}` : '暂无评分';
-      const cost   = poi.cost   ? `💰 人均 ¥${poi.cost}` : '';
+      const costVal = poi.cost && poi.cost.toString().trim() && parseFloat(poi.cost) > 0 ? poi.cost : null;
+      const cost   = costVal ? `💰 人均 ¥${costVal}` : '';
       const aMin   = poi.a_route?.detour_min != null ? `${poi.a_route.detour_min.toFixed(0)} 分钟` : '—';
       const bMin   = poi.b_route?.detour_min != null ? `${poi.b_route.detour_min.toFixed(0)} 分钟` : '—';
       const aTot   = poi.a_route?.total_min   != null ? `全程 ${poi.a_route.total_min.toFixed(0)} 分钟` : '';

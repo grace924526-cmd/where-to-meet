@@ -41,8 +41,9 @@ _SYSTEM = """\
 要求：
 1. 必须点出「为什么推荐」——引用真实数据，如绕路时间、评分、人均消费，不要编造数字
 2. 标记为「仅一方顺路」的餐厅，要如实说明"只有一方比较顺路"
-3. 语气自然轻松，像朋友推荐，不要营销腔，不要用"尊享""臻选"等词
-4. 只输出推荐语本身，不要 JSON，不要标题，不要序号
+3. 若某项数据为「数据获取失败」，跳过该项的路线信息，不要引用、不要推测、不要用任何数字代替
+4. 语气自然轻松，像朋友推荐，不要营销腔，不要用"尊享""臻选"等词
+5. 只输出推荐语本身，不要 JSON，不要标题，不要序号
 
 示例风格：
 「海底捞和南门涮肉都不错，两人绕路都在 10 分钟以内，海底捞评分 4.8、人均 120，南门涮肉稍实惠一些。如果不介意 A 多绕一点，清真鸦儿李记的评价也很好，人均只要 87。」
@@ -60,8 +61,9 @@ def _build_summary(ranked_pois: list[dict], top_n: int = 5) -> str:
         b_d = p.get("b_route", {}).get("detour_min")
         label = _LABEL_CN.get(p.get("detour_label", ""), "未知")
 
-        a_str = f"{a_d}分钟" if a_d is not None else "未知"
-        b_str = f"{b_d}分钟" if b_d is not None else "未知"
+        # 若 detour_min 为 None，明确标注"数据获取失败"，防止 LLM 用任何数字填充
+        a_str = f"{a_d}分钟" if a_d is not None else "数据获取失败"
+        b_str = f"{b_d}分钟" if b_d is not None else "数据获取失败"
 
         lines.append(
             f"#{i} {p.get('name', '?')} | "
