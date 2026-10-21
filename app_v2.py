@@ -95,19 +95,27 @@ def get_route_time(origin: str, dest: str, mode: str, city: str = "北京") -> i
     """
     获取路线时间（秒），失败返回 99999。带一次重试，规避高德公交 API QPS 限制。
     mode: transit | driving | cycling | walking | auto
+    注意：transit 模式要求 city 非空；city 为空时自动降级为 driving。
     """
     import time as _time
 
+    # 公交规划必须有 city；city 为空时降级为 driving，避免必然失败
+    effective_mode = mode
+    if mode == "transit" and not city:
+        effective_mode = "driving"
+    elif mode == "auto" and not city:
+        effective_mode = "driving"
+
     def _once():
-        if mode == "driving":
+        if effective_mode == "driving":
             return _call_driving(origin, dest)
-        elif mode == "walking":
+        elif effective_mode == "walking":
             return _call_walking(origin, dest)
-        elif mode == "transit":
+        elif effective_mode == "transit":
             return _call_transit(origin, dest, city)
-        elif mode == "cycling":
+        elif effective_mode == "cycling":
             return _call_cycling(origin, dest)
-        elif mode == "auto":
+        elif effective_mode == "auto":
             t_drive   = _call_driving(origin, dest)
             t_transit = _call_transit(origin, dest, city)
             times = [t for t in [t_drive, t_transit] if t < 99999]
@@ -165,8 +173,16 @@ def calc_detour_for_poi(
     a_via_sec = (a1 + a2) if (a1 < 99999 and a2 < 99999) else 99999
     b_via_sec = (b1 + b2) if (b1 < 99999 and b2 < 99999) else 99999
 
-    a_detour_min = round((a_via_sec - baseline_a_sec) / 60, 1) if a_via_sec < 99999 else None
-    b_detour_min = round((b_via_sec - baseline_b_sec) / 60, 1) if b_via_sec < 99999 else None
+    a_detour_min = (
+        round((a_via_sec - baseline_a_sec) / 60, 1)
+        if a_via_sec < 99999 and baseline_a_sec < 99999
+        else None
+    )
+    b_detour_min = (
+        round((b_via_sec - baseline_b_sec) / 60, 1)
+        if b_via_sec < 99999 and baseline_b_sec < 99999
+        else None
+    )
 
     a_route = {
         "leg1_sec": a1, "leg2_sec": a2,
@@ -358,6 +374,15 @@ def search():
     baseline_a_sec = f_base_a.result()
     baseline_b_sec = f_base_b.result()
 
+    # 基准路线失败时提前报错，避免后续计算出负数绕路时间
+    if baseline_a_sec >= 99999:
+        return jsonify({
+            "error": "A 的直达路线计算失败，请确认城市填写正确，或切换出行方式（公交需要填城市）"
+        }), 400
+    if baseline_b_sec >= 99999:
+        return jsonify({
+            "error": "B 的直达路线计算失败，请确认城市填写正确，或切换出行方式（公交需要填城市）"
+        }), 400
     # ── 3. M3 Agent2：搜索中心 + 高德 POI + LLM 语义筛选 ────────────────
     agent2_result = search_candidates(a_work, b_work, search_params, city=city, query=query)
     pois   = agent2_result["pois"]
